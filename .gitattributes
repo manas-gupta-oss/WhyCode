@@ -1,0 +1,2 @@
+# Keep LF everywhere so exact-quote checks and fixtures behave the same on Windows and CI.
+* text=auto eol=lf
