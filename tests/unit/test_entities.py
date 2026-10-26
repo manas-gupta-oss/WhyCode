@@ -152,6 +152,12 @@ def test_nested_function(sample):
     assert (helper.start_line, helper.end_line) == (31, 32)
 
 
+def test_async_function(sample):
+    fn = by_qual(sample.functions)["fetch"]
+    assert fn.is_async
+    assert (fn.start_line, fn.end_line) == (36, 37)
+
+
 def test_methods_not_confused_with_module_functions():
     src = "def run():\n    pass\n\nclass A:\n    def run(self):\n        pass\n"
     parsed = parse_source(src, "m.py", REPO)

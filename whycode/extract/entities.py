@@ -189,7 +189,13 @@ class _Extractor:
         if kind == "class":
             self.classes.append(ClassEntity(**common))
         else:
-            self.functions.append(FunctionEntity(**common, is_method=scope.kind == "class"))
+            self.functions.append(
+                FunctionEntity(
+                    **common,
+                    is_async=any(c.type == "async" for c in node.children),
+                    is_method=scope.kind == "class",
+                )
+            )
         return _Scope(kind, entity_id, qual)
 
 
