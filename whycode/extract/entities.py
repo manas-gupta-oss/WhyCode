@@ -488,11 +488,16 @@ def parse_file(
     return parse_source(_read_source(real, rel, max_file_bytes), rel, repo)
 
 
+def _is_link(path: str) -> bool:
+    return os.path.islink(path) or os.path.isjunction(path)
+
+
 def _excluded_dir(dirpath: str, name: str, excluded: Collection[str]) -> bool:
     full = os.path.join(dirpath, name)
     return (
         name in excluded
         or name.endswith(".egg-info")
+        or _is_link(full)
         or os.path.isfile(os.path.join(full, "pyvenv.cfg"))  # any virtualenv, whatever its name
     )
 
@@ -506,7 +511,8 @@ def iter_repository(
 ) -> Iterator[ParsedFile | SkippedFile]:
     """Parse every Python file under `repo_root`, one at a time, in sorted path order.
 
-    Excluded directories are not descended into.
+    Symlinks are never followed: git stores them as links, and a target inside the repository
+    is parsed at its own path. Excluded directories are not descended into.
     """
     repo = normalize_repo(repo)
     root_real = Path(os.path.realpath(repo_root))
@@ -519,6 +525,9 @@ def iter_repository(
                 continue
             full = os.path.join(dirpath, filename)
             rel = Path(full).relative_to(root_real).as_posix()
+            if _is_link(full):
+                yield SkippedFile(path=rel, reason="symlink")
+                continue
             try:
                 yield parse_file(root_real, rel, repo, max_file_bytes=max_file_bytes)
             except EntityExtractionError as exc:

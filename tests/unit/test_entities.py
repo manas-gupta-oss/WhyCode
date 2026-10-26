@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from whycode.extract import entities
 from whycode.extract.entities import (
     ParsedFile,
     PathOutsideRepoError,
+    SkippedFile,
     UnsupportedFileError,
     iter_repository,
     parse_file,
@@ -465,6 +467,47 @@ def test_paths_outside_repo_rejected(tmp_path):
     for bad in ["../secret.py", "sub/../../secret.py", outside]:
         with pytest.raises(PathOutsideRepoError):
             parse_file(root, bad, REPO)
+
+
+def _symlink_or_skip(link: Path, target: Path, directory: bool = False) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks not available here: {exc}")
+
+
+def test_symlink_to_outside_file_rejected(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = write(tmp_path, "outside.py", "SECRET = 1\n")
+    _symlink_or_skip(root / "link.py", outside)
+    with pytest.raises(PathOutsideRepoError):
+        parse_file(root, "link.py", REPO)
+    result = parse_repository(root, REPO)
+    assert result.files == []
+    assert result.skipped == [SkippedFile(path="link.py", reason="symlink")]
+
+
+def test_symlinked_directory_not_followed(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    write(tmp_path, "elsewhere/x.py", "SECRET = 1\n")
+    _symlink_or_skip(root / "linked", tmp_path / "elsewhere", directory=True)
+    assert parse_repository(root, REPO).files == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_junction_to_outside_directory_not_followed(tmp_path):
+    import _winapi
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    write(root, "keep.py", "")
+    write(tmp_path, "elsewhere/x.py", "SECRET = 1\n")
+    _winapi.CreateJunction(str(tmp_path / "elsewhere"), str(root / "linked"))
+    assert [f.file.file_path for f in parse_repository(root, REPO).files] == ["keep.py"]
+    with pytest.raises(PathOutsideRepoError):
+        parse_file(root, "linked/x.py", REPO)
 
 
 # ---------- repositories ----------
