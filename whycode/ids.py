@@ -6,7 +6,10 @@ The Repo node itself uses the bare repo, "psf/requests". Nothing else should bui
 import hashlib
 import re
 
-KINDS = frozenset({"pr", "issue", "commit", "dec", "ev", "user", "file", "fn", "mod", "cfg"})
+# "class" ids come from the code parser (extract/entities.py); schema.cypher has no Class label yet.
+KINDS = frozenset(
+    {"pr", "issue", "commit", "dec", "ev", "user", "file", "class", "fn", "mod", "cfg"}
+)
 
 _REPO_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*/[a-z0-9_.-]+$")
 
