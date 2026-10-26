@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import re
+import tokenize
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import PurePosixPath
@@ -33,6 +35,10 @@ class EntityExtractionError(Exception):
 
 class PathOutsideRepoError(EntityExtractionError, ValueError):
     """The requested path resolves outside the repository root."""
+
+
+class UnsupportedFileError(EntityExtractionError):
+    """Not a Python source file: wrong suffix, binary, too large or undecodable."""
 
 
 class _Entity(BaseModel):
@@ -96,6 +102,7 @@ class ParsedFile(BaseModel):
     classes: tuple[ClassEntity, ...] = ()
     functions: tuple[FunctionEntity, ...] = ()
     config_keys: tuple[ConfigKeyEntity, ...] = ()
+    encoding: str = "utf-8"
     syntax_issues: tuple[SyntaxIssue, ...] = ()
     has_syntax_errors: bool = False
 
@@ -116,10 +123,23 @@ def parse_source(source: bytes | str, path: str, repo: str) -> ParsedFile:
     """Extract entities from one file's source. `path` is the repo-relative path used in ids."""
     rel = _normalize_rel_path(path)
     repo = normalize_repo(repo)
-    text = source if isinstance(source, str) else source.decode("utf-8")
+    if isinstance(source, str):
+        text, encoding = source, "utf-8"
+    else:
+        text, encoding = _decode(source, rel)
     data = text.encode("utf-8")
     tree = Parser(_language()).parse(data)
-    return _Extractor(repo, rel, _line_count(text)).run(tree.root_node)
+    return _Extractor(repo, rel, encoding, _line_count(text)).run(tree.root_node)
+
+
+def _decode(data: bytes, rel: str) -> tuple[str, str]:
+    if b"\x00" in data:
+        raise UnsupportedFileError(f"{rel}: binary content (NUL byte)")
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+        return data.decode(encoding), encoding
+    except (SyntaxError, LookupError, UnicodeDecodeError) as exc:
+        raise UnsupportedFileError(f"{rel}: cannot decode source ({exc})") from exc
 
 
 def _line_count(text: str) -> int:
@@ -166,6 +186,7 @@ class _Scope:
 class _Extractor:
     repo: str
     path: str
+    encoding: str
     line_count: int
     file_id: str = ""
     classes: list[ClassEntity] = field(default_factory=list)
@@ -197,6 +218,7 @@ class _Extractor:
             classes=tuple(self.classes),
             functions=tuple(self.functions),
             config_keys=tuple(self.config_keys),
+            encoding=self.encoding,
             syntax_issues=tuple(self.issues),
             has_syntax_errors=root.has_error,
         )

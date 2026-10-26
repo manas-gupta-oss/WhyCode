@@ -4,6 +4,7 @@ from whycode.extract import entities
 from whycode.extract.entities import (
     ParsedFile,
     PathOutsideRepoError,
+    UnsupportedFileError,
     parse_source,
 )
 from whycode.ids import make_id
@@ -314,3 +315,37 @@ def test_missing_token_reported():
     parsed = parse_source("def f(:\n    pass\n", "m.py", REPO)
     assert parsed.has_syntax_errors
     assert parsed.syntax_issues
+
+
+def test_unicode_identifiers_and_strings():
+    src = "GRÜSSE = 'héllo — 世界'\n\ndef 计算(x='ü'):\n    return x\n\nclass Ñandú:\n    pass\n"
+    parsed = parse_source(src.encode("utf-8"), "u.py", REPO)
+    assert not parsed.has_syntax_errors
+    (fn,) = parsed.functions
+    assert fn.name == "计算" and (fn.start_line, fn.end_line) == (3, 4)
+    assert parsed.classes[0].name == "Ñandú" and parsed.classes[0].start_line == 6
+    values = {c.qualified_name: c.value for c in parsed.config_keys}
+    assert values == {"GRÜSSE": "'héllo — 世界'", "计算.x": "'ü'"}
+
+
+def test_latin1_coding_cookie_is_honoured():
+    src = "# -*- coding: latin-1 -*-\nNAME = 'café'\n".encode("latin-1")
+    parsed = parse_source(src, "l.py", REPO)
+    assert parsed.encoding == "iso-8859-1"
+    assert parsed.config_keys[0].value == "'café'"
+
+
+def test_utf8_bom_is_accepted():
+    parsed = parse_source(b"\xef\xbb\xbfMAX_SIZE = 1\n", "b.py", REPO)
+    assert parsed.config_keys[0].name == "MAX_SIZE"
+    assert parsed.config_keys[0].start_line == 1
+
+
+def test_undecodable_source_rejected():
+    with pytest.raises(UnsupportedFileError, match="decode"):
+        parse_source(b"X = '\xff\xfe'\n", "bad.py", REPO)
+
+
+def test_binary_source_rejected():
+    with pytest.raises(UnsupportedFileError, match="binary"):
+        parse_source(b"\x00\x01\x02ELF", "bin.py", REPO)
