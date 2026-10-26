@@ -218,12 +218,40 @@ def test_annotated_constant(sample):
     assert cfg.value == "10" and cfg.start_line == 6
 
 
+def test_non_config_names_are_excluded(sample):
+    quals = set(by_qual(sample.config_keys))
+    assert "IMPORTED_CONST" not in quals  # imported, not assigned
+    assert "lowercase_value" not in quals
+    assert "T" not in quals  # TypeVar
+    assert "LIMIT" not in quals and "HTTPAdapter.LIMIT" not in quals  # class attribute
+
+
 def test_multiple_assignment_targets():
     src = "AA = BB = 1\nCC, DD = 2, 3\n[EE, *REST] = items\nXX, y = 4, 5\nGG, HH = pair\n"
     parsed = parse_source(src, "m.py", REPO)
     values = {c.name: c.value for c in parsed.config_keys}
     assert values == {"AA": "1", "BB": "1", "CC": "2", "DD": "3", "EE": "items", "XX": "4",
                       "GG": "pair", "HH": "pair"}  # fmt: skip
+
+
+def test_single_letter_names_are_not_config():
+    assert parse_source("A = 1\nK, V = 2, 3\n", "m.py", REPO).config_keys == ()
+
+
+def test_constant_edge_cases():
+    src = (
+        "X: int\n"  # annotation without value
+        "COUNT += 1\n"  # augmented assignment
+        "obj.ATTR = 1\n"  # attribute target
+        "_PRIVATE_TIMEOUT = 30\n"
+        "P = ParamSpec('P')\n"
+        "UserId = NewType('UserId', int)\n"
+        "ID_T = typing.TypeVar('ID_T')\n"
+        "def f():\n    LOCAL_CONST = 1\n"
+        "if DEBUG:\n    LEVEL = 'debug'\n"
+    )
+    parsed = parse_source(src, "m.py", REPO)
+    assert [c.name for c in parsed.config_keys] == ["_PRIVATE_TIMEOUT", "LEVEL"]
 
 
 def test_multiline_constant_value_and_range():

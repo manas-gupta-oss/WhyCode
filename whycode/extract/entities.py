@@ -14,6 +14,10 @@ from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
 
+# Calls that make an upper-case module name a type declaration, not configuration.
+_TYPE_FACTORIES = frozenset(
+    {"TypeVar", "ParamSpec", "TypeVarTuple", "NewType", "NamedTuple", "TypedDict"}
+)
 _PATTERN_TYPES = frozenset({"pattern_list", "tuple_pattern", "list_pattern"})
 _SEQUENCE_VALUE_TYPES = frozenset({"expression_list", "tuple", "list"})
 _WS_RE = re.compile(r"\s+")
@@ -128,7 +132,7 @@ def _end_line(node: Node) -> int:
 
 def _is_constant_name(name: str) -> bool:
     core = name.lstrip("_")
-    return bool(core) and core[0].isalpha() and core.isupper()
+    return len(core) >= 2 and core[0].isalpha() and core.isupper()
 
 
 @dataclass(frozen=True)
@@ -245,6 +249,11 @@ class _Extractor:
             value = value.child_by_field_name("right")
         if value is None:  # annotation only, e.g. `X: int`
             return
+        if value.type == "call":
+            func = value.child_by_field_name("function")
+            func_name = _text(func).rsplit(".", 1)[-1]
+            if func_name in _TYPE_FACTORIES:
+                return
         for target in targets:
             for name_node, item_value in self._unpack(target, value):
                 name = _text(name_node)
