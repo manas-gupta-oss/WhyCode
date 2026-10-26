@@ -166,6 +166,15 @@ def test_decorated_multiline_function_includes_decorators_in_range(sample):
     assert fn.end_line == 47
 
 
+def test_property_getter_and_setter_get_distinct_ids(sample):
+    names = [f for f in sample.functions if f.qualified_name == "HTTPAdapter.name"]
+    assert [f.decorators for f in names] == [("property",), ("name.setter",)]
+    assert names[0].id.endswith("::HTTPAdapter.name")
+    assert names[1].id.endswith("::HTTPAdapter.name~2")
+    assert (names[0].start_line, names[0].def_line, names[0].end_line) == (21, 22, 23)
+    assert (names[1].start_line, names[1].end_line) == (25, 27)
+
+
 def test_methods_not_confused_with_module_functions():
     src = "def run():\n    pass\n\nclass A:\n    def run(self):\n        pass\n"
     parsed = parse_source(src, "m.py", REPO)

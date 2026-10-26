@@ -128,7 +128,8 @@ def _end_line(node: Node) -> int:
 class _Scope:
     kind: Literal["file", "class", "function"]
     entity_id: str
-    qual: str  # dotted name, "" for the file
+    qual: str  # clean dotted name, "" for the file
+    key: str  # same, with "~N" duplicate suffixes, used in ids
 
 
 @dataclass
@@ -139,10 +140,11 @@ class _Extractor:
     file_id: str = ""
     classes: list[ClassEntity] = field(default_factory=list)
     functions: list[FunctionEntity] = field(default_factory=list)
+    _seen: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def run(self, root: Node) -> ParsedFile:
         self.file_id = file_id = make_id(self.repo, "file", self.path)
-        file_scope = _Scope("file", file_id, "")
+        file_scope = _Scope("file", file_id, "", "")
         # Iterative walk: deeply nested expressions must not hit Python's recursion limit.
         stack: list[tuple[Node, _Scope]] = [(root, file_scope)]
         while stack:
@@ -170,6 +172,11 @@ class _Extractor:
             return self._definition(node, scope, "function")
         return scope
 
+    def _unique_key(self, kind: str, key: str) -> str:
+        n = self._seen.get((kind, key), 0) + 1
+        self._seen[(kind, key)] = n
+        return key if n == 1 else f"{key}~{n}"
+
     def _definition(self, node: Node, scope: _Scope, kind: Literal["class", "function"]) -> _Scope:
         name = _text(node.child_by_field_name("name"))
         if not name:  # recovered from a syntax error without a name: nothing to identify
@@ -184,7 +191,8 @@ class _Extractor:
                 if d.type == "decorator"
             )
         qual = f"{scope.qual}.{name}" if scope.qual else name
-        entity_id = make_id(self.repo, "class" if kind == "class" else "fn", f"{self.path}::{qual}")
+        key = self._unique_key(kind, f"{scope.key}.{name}" if scope.key else name)
+        entity_id = make_id(self.repo, "class" if kind == "class" else "fn", f"{self.path}::{key}")
         common = dict(
             id=entity_id,
             repo=self.repo,
@@ -208,7 +216,7 @@ class _Extractor:
                     is_method=scope.kind == "class",
                 )
             )
-        return _Scope(kind, entity_id, qual)
+        return _Scope(kind, entity_id, qual, key)
 
 
 # ---------- files and repositories ----------
