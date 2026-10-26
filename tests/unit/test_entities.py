@@ -226,6 +226,27 @@ def test_non_config_names_are_excluded(sample):
     assert "LIMIT" not in quals and "HTTPAdapter.LIMIT" not in quals  # class attribute
 
 
+def test_default_arguments(sample):
+    cfgs = by_qual(sample.config_keys)
+    retries = cfgs["HTTPAdapter.__init__.max_retries"]
+    assert retries.name == "max_retries"
+    assert retries.id == (
+        "psf/requests#cfg:src/requests/adapters.py::HTTPAdapter.__init__.max_retries"
+    )
+    assert retries.value == "DEFAULT_RETRIES"
+    assert retries.source == "default_argument"
+    assert retries.parent_id == by_qual(sample.functions)["HTTPAdapter.__init__"].id
+    assert retries.start_line == 18
+    assert cfgs["top.b"].value == "2"
+    assert cfgs["fetch.timeout"].value == "5.0"  # typed default
+    assert "top.a" not in cfgs
+
+
+def test_keyword_only_default_argument():
+    parsed = parse_source("def f(*args, flag=False, **kw):\n    pass\n", "m.py", REPO)
+    assert [(c.qualified_name, c.value) for c in parsed.config_keys] == [("f.flag", "False")]
+
+
 def test_multiple_assignment_targets():
     src = "AA = BB = 1\nCC, DD = 2, 3\n[EE, *REST] = items\nXX, y = 4, 5\nGG, HH = pair\n"
     parsed = parse_source(src, "m.py", REPO)

@@ -20,6 +20,7 @@ _TYPE_FACTORIES = frozenset(
 )
 _PATTERN_TYPES = frozenset({"pattern_list", "tuple_pattern", "list_pattern"})
 _SEQUENCE_VALUE_TYPES = frozenset({"expression_list", "tuple", "list"})
+_DEFAULT_PARAM_TYPES = frozenset({"default_parameter", "typed_default_parameter"})
 _WS_RE = re.compile(r"\s+")
 
 
@@ -236,7 +237,29 @@ class _Extractor:
                     is_method=scope.kind == "class",
                 )
             )
+            self._default_arguments(node, qual, key, entity_id)
         return _Scope(kind, entity_id, qual, key)
+
+    def _default_arguments(self, fn: Node, fn_qual: str, fn_key: str, fn_id: str) -> None:
+        params = fn.child_by_field_name("parameters")
+        if params is None:
+            return
+        for param in params.named_children:
+            if param.type not in _DEFAULT_PARAM_TYPES:
+                continue
+            name_node = param.child_by_field_name("name")
+            if name_node is None or name_node.type != "identifier":
+                continue
+            name = _text(name_node)
+            self._config_key(
+                name=name,
+                qual=f"{fn_qual}.{name}",
+                key=f"{fn_key}.{name}",
+                parent_id=fn_id,
+                node=param,
+                value=param.child_by_field_name("value"),
+                source="default_argument",
+            )
 
     def _module_constants(self, node: Node, scope: _Scope) -> None:
         # `A = B = 1` nests: assignment(left=A, right=assignment(left=B, right=1)).
