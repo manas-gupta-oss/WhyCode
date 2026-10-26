@@ -14,6 +14,8 @@ from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
 
+MAX_VALUE_CHARS = 500
+
 # Calls that make an upper-case module name a type declaration, not configuration.
 _TYPE_FACTORIES = frozenset(
     {"TypeVar", "ParamSpec", "TypeVarTuple", "NewType", "NamedTuple", "TypedDict"}
@@ -134,6 +136,10 @@ def _end_line(node: Node) -> int:
 def _is_constant_name(name: str) -> bool:
     core = name.lstrip("_")
     return len(core) >= 2 and core[0].isalpha() and core.isupper()
+
+
+def _clip(value: str) -> str:
+    return value if len(value) <= MAX_VALUE_CHARS else value[: MAX_VALUE_CHARS - 3] + "..."
 
 
 @dataclass(frozen=True)
@@ -329,7 +335,7 @@ class _Extractor:
                 start_line=_start_line(node),
                 end_line=_end_line(node),
                 source=source,
-                value=_text(value),
+                value=_clip(_text(value)),
             )
         )
 

@@ -1,5 +1,6 @@
 import pytest
 
+from whycode.extract import entities
 from whycode.extract.entities import (
     ParsedFile,
     PathOutsideRepoError,
@@ -280,6 +281,12 @@ def test_multiline_constant_value_and_range():
     (cfg,) = parse_source(src, "m.py", REPO).config_keys
     assert (cfg.start_line, cfg.end_line) == (1, 4)
     assert cfg.value.startswith("{") and cfg.value.endswith("}")
+
+
+def test_long_value_is_clipped():
+    (cfg,) = parse_source("BIG = '" + "x" * 2000 + "'\n", "m.py", REPO).config_keys
+    assert len(cfg.value) == entities.MAX_VALUE_CHARS
+    assert cfg.value.endswith("...")
 
 
 def test_redefined_constant_gets_ordinal_id():
