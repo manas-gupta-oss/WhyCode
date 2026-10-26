@@ -199,3 +199,34 @@ def test_crlf_and_trailing_blank_lines_do_not_shift_lines():
 def test_lambdas_are_not_functions():
     parsed = parse_source("f = lambda x=1: x\n", "m.py", REPO)
     assert parsed.functions == () and parsed.config_keys == ()
+
+
+# ---------- config keys ----------
+
+
+def test_uppercase_module_constant(sample):
+    cfg = by_qual(sample.config_keys)["DEFAULT_RETRIES"]
+    assert cfg.id == "psf/requests#cfg:src/requests/adapters.py::DEFAULT_RETRIES"
+    assert cfg.source == "module_constant"
+    assert cfg.value == "3"
+    assert (cfg.start_line, cfg.end_line) == (5, 5)
+    assert cfg.parent_id == sample.file.id
+
+
+def test_annotated_constant(sample):
+    cfg = by_qual(sample.config_keys)["DEFAULT_POOLSIZE"]
+    assert cfg.value == "10" and cfg.start_line == 6
+
+
+def test_multiline_constant_value_and_range():
+    src = "SETTINGS = {\n    'a': 1,\n    'b': 2,\n}\n"
+    (cfg,) = parse_source(src, "m.py", REPO).config_keys
+    assert (cfg.start_line, cfg.end_line) == (1, 4)
+    assert cfg.value.startswith("{") and cfg.value.endswith("}")
+
+
+def test_redefined_constant_gets_ordinal_id():
+    src = "try:\n    MODE = 'fast'\nexcept ImportError:\n    MODE = 'slow'\n"
+    a, b = parse_source(src, "m.py", REPO).config_keys
+    assert a.id.endswith("::MODE") and b.id.endswith("::MODE~2")
+    assert a.qualified_name == b.qualified_name == "MODE"

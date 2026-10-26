@@ -124,6 +124,11 @@ def _end_line(node: Node) -> int:
     return row + 1
 
 
+def _is_constant_name(name: str) -> bool:
+    core = name.lstrip("_")
+    return bool(core) and core[0].isalpha() and core.isupper()
+
+
 @dataclass(frozen=True)
 class _Scope:
     kind: Literal["file", "class", "function"]
@@ -140,6 +145,7 @@ class _Extractor:
     file_id: str = ""
     classes: list[ClassEntity] = field(default_factory=list)
     functions: list[FunctionEntity] = field(default_factory=list)
+    config_keys: list[ConfigKeyEntity] = field(default_factory=list)
     _seen: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def run(self, root: Node) -> ParsedFile:
@@ -161,6 +167,7 @@ class _Extractor:
             ),
             classes=tuple(self.classes),
             functions=tuple(self.functions),
+            config_keys=tuple(self.config_keys),
             has_syntax_errors=root.has_error,
         )
 
@@ -170,6 +177,13 @@ class _Extractor:
             return self._definition(node, scope, "class")
         if node.type == "function_definition":
             return self._definition(node, scope, "function")
+        if (
+            node.type == "assignment"
+            and scope.kind == "file"
+            and node.parent is not None
+            and node.parent.type == "expression_statement"
+        ):
+            self._module_constants(node, scope)
         return scope
 
     def _unique_key(self, kind: str, key: str) -> str:
@@ -217,6 +231,51 @@ class _Extractor:
                 )
             )
         return _Scope(kind, entity_id, qual, key)
+
+    def _module_constants(self, node: Node, scope: _Scope) -> None:
+        target = node.child_by_field_name("left")
+        value = node.child_by_field_name("right")
+        if target is None or value is None:  # annotation only, e.g. `X: int`
+            return
+        name = _text(target)
+        if target.type == "identifier" and _is_constant_name(name):
+            self._config_key(
+                name=name,
+                qual=name,
+                key=name,
+                parent_id=scope.entity_id,
+                node=node.parent or node,
+                value=value,
+                source="module_constant",
+            )
+
+    def _config_key(
+        self,
+        *,
+        name: str,
+        qual: str,
+        key: str,
+        parent_id: str,
+        node: Node,
+        value: Node | None,
+        source: Literal["module_constant", "default_argument"],
+    ) -> None:
+        unique = self._unique_key("cfg", key)
+        self.config_keys.append(
+            ConfigKeyEntity(
+                id=make_id(self.repo, "cfg", f"{self.path}::{unique}"),
+                repo=self.repo,
+                name=name,
+                file_path=self.path,
+                qualified_name=qual,
+                file_id=self.file_id,
+                parent_id=parent_id,
+                start_line=_start_line(node),
+                end_line=_end_line(node),
+                source=source,
+                value=_text(value),
+            )
+        )
 
 
 # ---------- files and repositories ----------
