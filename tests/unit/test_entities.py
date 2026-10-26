@@ -218,6 +218,14 @@ def test_annotated_constant(sample):
     assert cfg.value == "10" and cfg.start_line == 6
 
 
+def test_multiple_assignment_targets():
+    src = "AA = BB = 1\nCC, DD = 2, 3\n[EE, *REST] = items\nXX, y = 4, 5\nGG, HH = pair\n"
+    parsed = parse_source(src, "m.py", REPO)
+    values = {c.name: c.value for c in parsed.config_keys}
+    assert values == {"AA": "1", "BB": "1", "CC": "2", "DD": "3", "EE": "items", "XX": "4",
+                      "GG": "pair", "HH": "pair"}  # fmt: skip
+
+
 def test_multiline_constant_value_and_range():
     src = "SETTINGS = {\n    'a': 1,\n    'b': 2,\n}\n"
     (cfg,) = parse_source(src, "m.py", REPO).config_keys

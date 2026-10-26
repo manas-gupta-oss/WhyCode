@@ -14,6 +14,8 @@ from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
 
+_PATTERN_TYPES = frozenset({"pattern_list", "tuple_pattern", "list_pattern"})
+_SEQUENCE_VALUE_TYPES = frozenset({"expression_list", "tuple", "list"})
 _WS_RE = re.compile(r"\s+")
 
 
@@ -233,21 +235,43 @@ class _Extractor:
         return _Scope(kind, entity_id, qual, key)
 
     def _module_constants(self, node: Node, scope: _Scope) -> None:
-        target = node.child_by_field_name("left")
-        value = node.child_by_field_name("right")
-        if target is None or value is None:  # annotation only, e.g. `X: int`
+        # `A = B = 1` nests: assignment(left=A, right=assignment(left=B, right=1)).
+        targets: list[Node] = []
+        value: Node | None = node
+        while value is not None and value.type == "assignment":
+            left = value.child_by_field_name("left")
+            if left is not None:
+                targets.append(left)
+            value = value.child_by_field_name("right")
+        if value is None:  # annotation only, e.g. `X: int`
             return
-        name = _text(target)
-        if target.type == "identifier" and _is_constant_name(name):
-            self._config_key(
-                name=name,
-                qual=name,
-                key=name,
-                parent_id=scope.entity_id,
-                node=node.parent or node,
-                value=value,
-                source="module_constant",
-            )
+        for target in targets:
+            for name_node, item_value in self._unpack(target, value):
+                name = _text(name_node)
+                if _is_constant_name(name):
+                    self._config_key(
+                        name=name,
+                        qual=name,
+                        key=name,
+                        parent_id=scope.entity_id,
+                        node=node.parent or node,
+                        value=item_value,
+                        source="module_constant",
+                    )
+
+    @staticmethod
+    def _unpack(target: Node, value: Node) -> list[tuple[Node, Node]]:
+        """Pair each plain-name target with its value; a sequence target pairs element-wise
+        when the value is a literal sequence of the same length, else with the whole value."""
+        if target.type == "identifier":
+            return [(target, value)]
+        if target.type not in _PATTERN_TYPES:
+            return []  # attribute, subscript, ...
+        elements = target.named_children
+        values = value.named_children if value.type in _SEQUENCE_VALUE_TYPES else []
+        if len(values) != len(elements) or any(v.type == "list_splat" for v in values):
+            values = [value] * len(elements)
+        return [(e, v) for e, v in zip(elements, values, strict=True) if e.type == "identifier"]
 
     def _config_key(
         self,
