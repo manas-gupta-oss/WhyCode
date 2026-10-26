@@ -294,3 +294,23 @@ def test_redefined_constant_gets_ordinal_id():
     a, b = parse_source(src, "m.py", REPO).config_keys
     assert a.id.endswith("::MODE") and b.id.endswith("::MODE~2")
     assert a.qualified_name == b.qualified_name == "MODE"
+
+
+# ---------- syntax errors, encodings ----------
+
+
+def test_syntax_error_is_observable_and_valid_parts_survive():
+    src = "def good():\n    pass\n\nclass Broken:\n    def bad(self:\n        pass\n\nOK = 1\n"
+    parsed = parse_source(src, "m.py", REPO)
+    assert parsed.has_syntax_errors
+    assert parsed.syntax_issues and all(i.line >= 1 for i in parsed.syntax_issues)
+    fns = by_qual(parsed.functions)
+    assert not fns["good"].has_syntax_error
+    assert by_qual(parsed.classes)["Broken"].has_syntax_error
+    assert not by_qual(parsed.config_keys)["OK"].has_syntax_error
+
+
+def test_missing_token_reported():
+    parsed = parse_source("def f(:\n    pass\n", "m.py", REPO)
+    assert parsed.has_syntax_errors
+    assert parsed.syntax_issues

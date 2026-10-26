@@ -15,6 +15,7 @@ from tree_sitter import Language, Node, Parser
 from whycode.ids import make_id, normalize_repo
 
 MAX_VALUE_CHARS = 500
+MAX_SYNTAX_ISSUES = 50
 
 # Calls that make an upper-case module name a type declaration, not configuration.
 _TYPE_FACTORIES = frozenset(
@@ -54,6 +55,7 @@ class _SpanEntity(_Entity):
     parent_id: str  # the file, or the enclosing class or function
     start_line: int
     end_line: int
+    has_syntax_error: bool = False
 
 
 class ClassEntity(_SpanEntity):
@@ -79,6 +81,14 @@ class ConfigKeyEntity(_SpanEntity):
 CodeEntity = FileEntity | ClassEntity | FunctionEntity | ConfigKeyEntity
 
 
+class SyntaxIssue(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    line: int
+    kind: Literal["error", "missing"]
+    detail: str
+
+
 class ParsedFile(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -86,6 +96,7 @@ class ParsedFile(BaseModel):
     classes: tuple[ClassEntity, ...] = ()
     functions: tuple[FunctionEntity, ...] = ()
     config_keys: tuple[ConfigKeyEntity, ...] = ()
+    syntax_issues: tuple[SyntaxIssue, ...] = ()
     has_syntax_errors: bool = False
 
     @property
@@ -148,6 +159,7 @@ class _Scope:
     entity_id: str
     qual: str  # clean dotted name, "" for the file
     key: str  # same, with "~N" duplicate suffixes, used in ids
+    in_error: bool = False
 
 
 @dataclass
@@ -159,6 +171,7 @@ class _Extractor:
     classes: list[ClassEntity] = field(default_factory=list)
     functions: list[FunctionEntity] = field(default_factory=list)
     config_keys: list[ConfigKeyEntity] = field(default_factory=list)
+    issues: list[SyntaxIssue] = field(default_factory=list)
     _seen: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def run(self, root: Node) -> ParsedFile:
@@ -168,6 +181,9 @@ class _Extractor:
         stack: list[tuple[Node, _Scope]] = [(root, file_scope)]
         while stack:
             node, scope = stack.pop()
+            if node.is_error or node.is_missing:
+                self._issue(node)
+                scope = _Scope(scope.kind, scope.entity_id, scope.qual, scope.key, True)
             child_scope = self._visit(node, scope)
             stack.extend((c, child_scope) for c in reversed(node.children))
         return ParsedFile(
@@ -181,8 +197,19 @@ class _Extractor:
             classes=tuple(self.classes),
             functions=tuple(self.functions),
             config_keys=tuple(self.config_keys),
+            syntax_issues=tuple(self.issues),
             has_syntax_errors=root.has_error,
         )
+
+    def _issue(self, node: Node) -> None:
+        if len(self.issues) >= MAX_SYNTAX_ISSUES:
+            return
+        line = _start_line(node)
+        if node.is_missing:
+            self.issues.append(SyntaxIssue(line=line, kind="missing", detail=node.type))
+        else:
+            snippet = _WS_RE.sub(" ", _text(node))[:60]
+            self.issues.append(SyntaxIssue(line=line, kind="error", detail=snippet))
 
     def _visit(self, node: Node, scope: _Scope) -> _Scope:
         """Record the entity `node` defines, if any, and return the scope for its children."""
@@ -232,6 +259,7 @@ class _Extractor:
             end_line=_end_line(span),
             def_line=_start_line(node),
             decorators=decorators,
+            has_syntax_error=scope.in_error or span.has_error,
         )
         if kind == "class":
             self.classes.append(ClassEntity(**common))
@@ -243,10 +271,12 @@ class _Extractor:
                     is_method=scope.kind == "class",
                 )
             )
-            self._default_arguments(node, qual, key, entity_id)
-        return _Scope(kind, entity_id, qual, key)
+            self._default_arguments(node, qual, key, entity_id, scope.in_error)
+        return _Scope(kind, entity_id, qual, key, scope.in_error)
 
-    def _default_arguments(self, fn: Node, fn_qual: str, fn_key: str, fn_id: str) -> None:
+    def _default_arguments(
+        self, fn: Node, fn_qual: str, fn_key: str, fn_id: str, in_error: bool
+    ) -> None:
         params = fn.child_by_field_name("parameters")
         if params is None:
             return
@@ -265,6 +295,7 @@ class _Extractor:
                 node=param,
                 value=param.child_by_field_name("value"),
                 source="default_argument",
+                in_error=in_error,
             )
 
     def _module_constants(self, node: Node, scope: _Scope) -> None:
@@ -295,6 +326,7 @@ class _Extractor:
                         node=node.parent or node,
                         value=item_value,
                         source="module_constant",
+                        in_error=scope.in_error,
                     )
 
     @staticmethod
@@ -321,6 +353,7 @@ class _Extractor:
         node: Node,
         value: Node | None,
         source: Literal["module_constant", "default_argument"],
+        in_error: bool,
     ) -> None:
         unique = self._unique_key("cfg", key)
         self.config_keys.append(
@@ -334,6 +367,7 @@ class _Extractor:
                 parent_id=parent_id,
                 start_line=_start_line(node),
                 end_line=_end_line(node),
+                has_syntax_error=in_error or node.has_error,
                 source=source,
                 value=_clip(_text(value)),
             )
