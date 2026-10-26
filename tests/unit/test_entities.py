@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 
 from whycode.extract import entities
 from whycode.extract.entities import (
+    FileFailure,
     ParsedFile,
     PathOutsideRepoError,
     SkippedFile,
@@ -525,7 +527,7 @@ def test_repository_scan(tmp_path):
         "pkg/a.py",
         "pkg/sub/b.py",
     ]
-    assert result.skipped == []
+    assert result.skipped == [] and result.failures == []
     b = result.files[2]
     assert b.functions[0].id == "psf/requests#fn:pkg/sub/b.py::B.run"
 
@@ -554,6 +556,37 @@ def test_custom_exclusions(tmp_path):
     write(tmp_path, "vendor/lib.py", "")
     result = parse_repository(tmp_path, REPO, exclude_dirs={"vendor"})
     assert [f.file.file_path for f in result.files] == ["keep.py"]
+
+
+def test_bad_files_do_not_stop_the_scan(tmp_path):
+    write(tmp_path, "a_good.py", "def ok():\n    pass\n")
+    write(tmp_path, "b_binary.py", b"\x00\x00\x00")
+    write(tmp_path, "c_latin.py", b"X = '\xe9'\n")  # no coding cookie: invalid UTF-8
+    write(tmp_path, "d_broken.py", "def broken(:\n")
+    write(tmp_path, "e_good.py", "LAST = 1\n")
+    result = parse_repository(tmp_path, REPO)
+    assert [f.file.file_path for f in result.files] == ["a_good.py", "d_broken.py", "e_good.py"]
+    assert result.files[1].has_syntax_errors
+    assert [s.path for s in result.skipped] == ["b_binary.py", "c_latin.py"]
+    assert result.failures == []
+
+
+def test_unexpected_error_reported_as_failure_and_scan_continues(tmp_path, monkeypatch, caplog):
+    write(tmp_path, "a.py", "")
+    write(tmp_path, "b.py", "")
+    real_parse_source = entities.parse_source
+
+    def flaky(source, path, repo):
+        if path == "a.py":
+            raise RuntimeError("boom")
+        return real_parse_source(source, path, repo)
+
+    monkeypatch.setattr(entities, "parse_source", flaky)
+    with caplog.at_level(logging.WARNING, logger="whycode.extract.entities"):
+        items = list(iter_repository(tmp_path, REPO))
+    assert items[0] == FileFailure(path="a.py", error_type="RuntimeError", message="boom")
+    assert isinstance(items[1], ParsedFile) and items[1].file.file_path == "b.py"
+    assert "a.py" in caplog.text
 
 
 def test_missing_root_raises(tmp_path):

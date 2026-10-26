@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import tokenize
@@ -17,6 +18,8 @@ from pydantic import BaseModel, ConfigDict
 from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
+
+logger = logging.getLogger(__name__)
 
 PYTHON_SUFFIXES = frozenset({".py"})
 DEFAULT_EXCLUDED_DIRS = frozenset(
@@ -144,9 +147,20 @@ class SkippedFile(BaseModel):
     reason: str
 
 
+class FileFailure(BaseModel):
+    """A file that failed unexpectedly; the scan carries on with the other files."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    error_type: str
+    message: str
+
+
 class RepositoryParse(BaseModel):
     files: list[ParsedFile] = []
     skipped: list[SkippedFile] = []
+    failures: list[FileFailure] = []
 
 
 @lru_cache(maxsize=1)
@@ -508,11 +522,12 @@ def iter_repository(
     *,
     exclude_dirs: Collection[str] = DEFAULT_EXCLUDED_DIRS,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
-) -> Iterator[ParsedFile | SkippedFile]:
+) -> Iterator[ParsedFile | SkippedFile | FileFailure]:
     """Parse every Python file under `repo_root`, one at a time, in sorted path order.
 
     Symlinks are never followed: git stores them as links, and a target inside the repository
-    is parsed at its own path. Excluded directories are not descended into.
+    is parsed at its own path. Excluded directories are not descended into. A file that fails
+    is reported as FileFailure (and logged) and the scan continues.
     """
     repo = normalize_repo(repo)
     root_real = Path(os.path.realpath(repo_root))
@@ -532,6 +547,9 @@ def iter_repository(
                 yield parse_file(root_real, rel, repo, max_file_bytes=max_file_bytes)
             except EntityExtractionError as exc:
                 yield SkippedFile(path=rel, reason=str(exc))
+            except Exception as exc:  # one bad file must not stop the scan; it is reported
+                logger.warning("failed to parse %s", rel, exc_info=True)
+                yield FileFailure(path=rel, error_type=type(exc).__name__, message=str(exc))
 
 
 def parse_repository(
@@ -548,6 +566,8 @@ def parse_repository(
     ):
         if isinstance(item, ParsedFile):
             result.files.append(item)
-        else:
+        elif isinstance(item, SkippedFile):
             result.skipped.append(item)
+        else:
+            result.failures.append(item)
     return result
