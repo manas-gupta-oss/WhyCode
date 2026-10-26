@@ -349,3 +349,58 @@ def test_undecodable_source_rejected():
 def test_binary_source_rejected():
     with pytest.raises(UnsupportedFileError, match="binary"):
         parse_source(b"\x00\x01\x02ELF", "bin.py", REPO)
+
+
+def test_deeply_nested_expression_does_not_overflow():
+    src = "VALUE = " + " + ".join(["1"] * 5000) + "\n"
+    (cfg,) = parse_source(src, "deep.py", REPO).config_keys
+    assert cfg.name == "VALUE"
+
+
+# ---------- identity ----------
+
+
+def test_repeated_parses_give_identical_entities():
+    a = parse_source(SAMPLE, "src/requests/adapters.py", REPO)
+    b = parse_source(SAMPLE, "src/requests/adapters.py", REPO)
+    assert a == b
+    assert [e.id for e in a.entities] == [e.id for e in b.entities]
+
+
+def test_all_ids_unique_within_file(sample):
+    ids = [e.id for e in sample.entities]
+    assert len(ids) == len(set(ids))
+
+
+def test_same_names_in_different_files_and_scopes_get_distinct_ids():
+    src = "LIMIT = 1\ndef run(limit=1):\n    pass\nclass A:\n    def run(self):\n        pass\n"
+    a = parse_source(src, "a.py", REPO)
+    b = parse_source(src, "b.py", REPO)
+    ids_a = {e.id for e in a.entities}
+    ids_b = {e.id for e in b.entities}
+    assert not ids_a & ids_b
+    assert len({f.id for f in a.functions}) == 2
+
+
+def test_repo_is_normalized_in_ids():
+    assert parse_source("", "a.py", "PSF/Requests").file.id == "psf/requests#file:a.py"
+
+
+def test_class_kind_registered_in_ids():
+    assert make_id(REPO, "class", "a.py::A") == "psf/requests#class:a.py::A"
+
+
+def test_several_independent_entities_in_one_file(sample):
+    assert {c.qualified_name for c in sample.classes} == {"HTTPAdapter", "HTTPAdapter.Inner"}
+    assert {f.qualified_name for f in sample.functions} == {
+        "top",
+        "HTTPAdapter.__init__",
+        "HTTPAdapter.name",
+        "HTTPAdapter.Inner.deep",
+        "HTTPAdapter.Inner.deep.helper",
+        "fetch",
+        "decorated",
+    }
+    # Entities are reported in source order.
+    starts = [f.def_line for f in sample.functions]
+    assert starts == sorted(starts)
