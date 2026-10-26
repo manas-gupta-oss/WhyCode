@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from whycode.extract import entities
@@ -5,6 +7,7 @@ from whycode.extract.entities import (
     ParsedFile,
     PathOutsideRepoError,
     UnsupportedFileError,
+    parse_file,
     parse_source,
 )
 from whycode.ids import make_id
@@ -70,6 +73,16 @@ def sample() -> ParsedFile:
 
 def by_qual(items):
     return {e.qualified_name: e for e in items}
+
+
+def write(root: Path, rel: str, content: str | bytes) -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content, encoding="utf-8", newline="\n")
+    return path
 
 
 # ---------- files ----------
@@ -404,3 +417,49 @@ def test_several_independent_entities_in_one_file(sample):
     # Entities are reported in source order.
     starts = [f.def_line for f in sample.functions]
     assert starts == sorted(starts)
+
+
+# ---------- files on disk ----------
+
+
+def test_parse_file_reads_relative_and_absolute_paths(tmp_path):
+    write(tmp_path, "pkg/mod.py", "def f():\n    pass\n")
+    rel = parse_file(tmp_path, "pkg/mod.py", REPO)
+    absolute = parse_file(tmp_path, tmp_path / "pkg" / "mod.py", REPO)
+    assert rel == absolute
+    assert rel.file.file_path == "pkg/mod.py"
+
+
+def test_parse_file_does_not_modify_the_file(tmp_path):
+    path = write(tmp_path, "m.py", b"X = 1\r\n")
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    parse_file(tmp_path, "m.py", REPO)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+@pytest.mark.parametrize("name", ["notes.txt", "stub.pyi", "script.js"])
+def test_unsupported_file_type(tmp_path, name):
+    write(tmp_path, name, "x = 1\n")
+    with pytest.raises(UnsupportedFileError, match="not a Python source file"):
+        parse_file(tmp_path, name, REPO)
+
+
+def test_binary_file_with_py_suffix(tmp_path):
+    write(tmp_path, "blob.py", bytes(range(256)))
+    with pytest.raises(UnsupportedFileError, match="binary"):
+        parse_file(tmp_path, "blob.py", REPO)
+
+
+def test_oversized_file(tmp_path):
+    write(tmp_path, "big.py", "X = 1\n" * 100)
+    with pytest.raises(UnsupportedFileError, match="exceeds"):
+        parse_file(tmp_path, "big.py", REPO, max_file_bytes=50)
+
+
+def test_paths_outside_repo_rejected(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = write(tmp_path, "secret.py", "TOKEN = 'x'\n")
+    for bad in ["../secret.py", "sub/../../secret.py", outside]:
+        with pytest.raises(PathOutsideRepoError):
+            parse_file(root, bad, REPO)

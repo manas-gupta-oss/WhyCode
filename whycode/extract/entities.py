@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import tokenize
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import tree_sitter_python
@@ -16,6 +17,8 @@ from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
 
+PYTHON_SUFFIXES = frozenset({".py"})
+DEFAULT_MAX_FILE_BYTES = 2_000_000
 MAX_VALUE_CHARS = 500
 MAX_SYNTAX_ISSUES = 50
 
@@ -408,3 +411,43 @@ def _normalize_rel_path(path: str) -> str:
     if not cleaned:
         raise PathOutsideRepoError(f"not a repository-relative path: {path!r}")
     return "/".join(cleaned)
+
+
+def _resolve_in_repo(root: Path, path: str | os.PathLike[str]) -> tuple[Path, str]:
+    """Return (real path, repo-relative posix path), refusing anything outside `root`."""
+    root_real = Path(os.path.realpath(root))
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        _normalize_rel_path(str(path))  # rejects ".." before touching the filesystem
+        candidate = root_real / candidate
+    real = Path(os.path.realpath(candidate))
+    if real != root_real and not real.is_relative_to(root_real):
+        raise PathOutsideRepoError(f"{path!s} resolves outside the repository root")
+    return real, real.relative_to(root_real).as_posix()
+
+
+def _read_source(real: Path, rel: str, max_file_bytes: int) -> bytes:
+    if real.suffix not in PYTHON_SUFFIXES:
+        raise UnsupportedFileError(f"{rel}: not a Python source file")
+    if not real.is_file():
+        raise UnsupportedFileError(f"{rel}: not a regular file")
+    size = real.stat().st_size
+    if size > max_file_bytes:
+        raise UnsupportedFileError(f"{rel}: {size} bytes exceeds the {max_file_bytes} byte limit")
+    return real.read_bytes()
+
+
+def parse_file(
+    repo_root: str | os.PathLike[str],
+    path: str | os.PathLike[str],
+    repo: str,
+    *,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> ParsedFile:
+    """Parse one file inside `repo_root`. `path` may be relative to the root or absolute.
+
+    Raises PathOutsideRepoError for paths (or symlinks) leading outside the root, and
+    UnsupportedFileError for non-Python, binary, oversized or undecodable files.
+    """
+    real, rel = _resolve_in_repo(Path(repo_root), path)
+    return parse_source(_read_source(real, rel, max_file_bytes), rel, repo)
