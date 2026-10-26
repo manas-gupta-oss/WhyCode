@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Literal
@@ -106,15 +106,47 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
+def _text(node: Node | None) -> str:
+    return node.text.decode("utf-8") if node is not None and node.text is not None else ""
+
+
+def _start_line(node: Node) -> int:
+    return node.start_point.row + 1
+
+
+def _end_line(node: Node) -> int:
+    row, col = node.end_point
+    # A span ending at column 0 stops before that line begins.
+    if col == 0 and row > node.start_point.row:
+        return row
+    return row + 1
+
+
+@dataclass(frozen=True)
+class _Scope:
+    kind: Literal["file", "class", "function"]
+    entity_id: str
+    qual: str  # dotted name, "" for the file
+
+
 @dataclass
 class _Extractor:
     repo: str
     path: str
     line_count: int
     file_id: str = ""
+    classes: list[ClassEntity] = field(default_factory=list)
+    functions: list[FunctionEntity] = field(default_factory=list)
 
     def run(self, root: Node) -> ParsedFile:
         self.file_id = file_id = make_id(self.repo, "file", self.path)
+        file_scope = _Scope("file", file_id, "")
+        # Iterative walk: deeply nested expressions must not hit Python's recursion limit.
+        stack: list[tuple[Node, _Scope]] = [(root, file_scope)]
+        while stack:
+            node, scope = stack.pop()
+            child_scope = self._visit(node, scope)
+            stack.extend((c, child_scope) for c in reversed(node.children))
         return ParsedFile(
             file=FileEntity(
                 id=file_id,
@@ -123,8 +155,42 @@ class _Extractor:
                 file_path=self.path,
                 line_count=self.line_count,
             ),
+            classes=tuple(self.classes),
+            functions=tuple(self.functions),
             has_syntax_errors=root.has_error,
         )
+
+    def _visit(self, node: Node, scope: _Scope) -> _Scope:
+        """Record the entity `node` defines, if any, and return the scope for its children."""
+        if node.type == "class_definition":
+            return self._definition(node, scope, "class")
+        if node.type == "function_definition":
+            return self._definition(node, scope, "function")
+        return scope
+
+    def _definition(self, node: Node, scope: _Scope, kind: Literal["class", "function"]) -> _Scope:
+        name = _text(node.child_by_field_name("name"))
+        if not name:  # recovered from a syntax error without a name: nothing to identify
+            return scope
+        qual = f"{scope.qual}.{name}" if scope.qual else name
+        entity_id = make_id(self.repo, "class" if kind == "class" else "fn", f"{self.path}::{qual}")
+        common = dict(
+            id=entity_id,
+            repo=self.repo,
+            name=name,
+            file_path=self.path,
+            qualified_name=qual,
+            file_id=self.file_id,
+            parent_id=scope.entity_id,
+            start_line=_start_line(node),
+            end_line=_end_line(node),
+            def_line=_start_line(node),
+        )
+        if kind == "class":
+            self.classes.append(ClassEntity(**common))
+        else:
+            self.functions.append(FunctionEntity(**common, is_method=scope.kind == "class"))
+        return _Scope(kind, entity_id, qual)
 
 
 # ---------- files and repositories ----------
