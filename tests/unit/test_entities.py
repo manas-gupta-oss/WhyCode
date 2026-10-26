@@ -1,5 +1,8 @@
 import logging
 import os
+import subprocess
+import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -374,6 +377,50 @@ def test_deeply_nested_expression_does_not_overflow():
     src = "VALUE = " + " + ".join(["1"] * 5000) + "\n"
     (cfg,) = parse_source(src, "deep.py", REPO).config_keys
     assert cfg.name == "VALUE"
+
+
+_STRESS_BLOCK = '''
+DEFAULT_{i} = {i}
+
+
+class Adapter{i}(Base):
+    """Doc {i}."""
+
+    def __init__(self, pool=DEFAULT_{i}, retries=None, block=False):
+        self.config = {{"a": [1, 2, 3], "b": (x for x in range(3))}}
+
+    @property
+    def name(self):
+        return f"n{{self.pool}}"
+
+    async def send(self, request, stream=False, timeout=None):
+        try:
+            conn = self.get(request.url, proxies=None)
+        except (ValueError, KeyError) as e:
+            raise RuntimeError(e) from e
+        return [r for r in conn if r]
+'''
+
+
+def test_large_file_parses_without_native_crash():
+    # Regression: tree-sitter 0.26.0 hit an access violation walking files like this one
+    # (and requests/adapters.py). A crash kills the interpreter, so parse in a subprocess.
+    code = (
+        "import sys\n"
+        "from whycode.extract.entities import parse_source\n"
+        "block = sys.stdin.read()\n"
+        "src = ''.join(block.format(i=i) for i in range(150))\n"
+        "print(len(parse_source(src, 'big.py', 'a/b').functions))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], input=_STRESS_BLOCK, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.strip() == "450"
+
+
+def test_tree_sitter_version_is_not_the_crashing_release():
+    assert not version("tree-sitter").startswith("0.26."), "see pyproject.toml pin"
 
 
 # ---------- identity ----------

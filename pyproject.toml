@@ -12,7 +12,8 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "tree-sitter>=0.25",
+    # 0.26.0 crashes (access violation) walking ordinary files on Windows; see tests/unit/test_entities.py
+    "tree-sitter>=0.25,<0.26",
     "tree-sitter-python>=0.25",
 ]
 
