@@ -7,7 +7,9 @@ from whycode.extract.entities import (
     ParsedFile,
     PathOutsideRepoError,
     UnsupportedFileError,
+    iter_repository,
     parse_file,
+    parse_repository,
     parse_source,
 )
 from whycode.ids import make_id
@@ -463,3 +465,61 @@ def test_paths_outside_repo_rejected(tmp_path):
     for bad in ["../secret.py", "sub/../../secret.py", outside]:
         with pytest.raises(PathOutsideRepoError):
             parse_file(root, bad, REPO)
+
+
+# ---------- repositories ----------
+
+
+def test_repository_scan(tmp_path):
+    write(tmp_path, "pkg/__init__.py", "")
+    write(tmp_path, "pkg/a.py", "MAX = 1\n\ndef run():\n    pass\n")
+    write(tmp_path, "pkg/sub/b.py", "class B:\n    def run(self):\n        pass\n")
+    write(tmp_path, "README.md", "# docs\n")
+    write(tmp_path, "data.json", "{}")
+    result = parse_repository(tmp_path, REPO)
+    assert [f.file.file_path for f in result.files] == [
+        "pkg/__init__.py",
+        "pkg/a.py",
+        "pkg/sub/b.py",
+    ]
+    assert result.skipped == []
+    b = result.files[2]
+    assert b.functions[0].id == "psf/requests#fn:pkg/sub/b.py::B.run"
+
+
+@pytest.mark.parametrize(
+    "excluded",
+    [".git/hooks", ".venv/lib", "venv", "__pycache__", "node_modules/pkg", "build", "dist",
+     "pkg.egg-info", ".tox/py312"],
+)  # fmt: skip
+def test_excluded_directories_are_skipped(tmp_path, excluded):
+    write(tmp_path, "keep.py", "A_B = 1\n")
+    write(tmp_path, f"{excluded}/hidden.py", "SECRET = 1\n")
+    result = parse_repository(tmp_path, REPO)
+    assert [f.file.file_path for f in result.files] == ["keep.py"]
+
+
+def test_virtualenv_with_any_name_is_skipped(tmp_path):
+    write(tmp_path, "keep.py", "")
+    write(tmp_path, "myenv/pyvenv.cfg", "home = /usr\n")
+    write(tmp_path, "myenv/lib/site.py", "X = 1\n")
+    assert [f.file.file_path for f in parse_repository(tmp_path, REPO).files] == ["keep.py"]
+
+
+def test_custom_exclusions(tmp_path):
+    write(tmp_path, "keep.py", "")
+    write(tmp_path, "vendor/lib.py", "")
+    result = parse_repository(tmp_path, REPO, exclude_dirs={"vendor"})
+    assert [f.file.file_path for f in result.files] == ["keep.py"]
+
+
+def test_missing_root_raises(tmp_path):
+    with pytest.raises(NotADirectoryError):
+        parse_repository(tmp_path / "nope", REPO)
+
+
+def test_iter_repository_is_lazy(tmp_path):
+    write(tmp_path, "a.py", "")
+    it = iter_repository(tmp_path, REPO)
+    assert iter(it) is it
+    assert isinstance(next(it), ParsedFile)

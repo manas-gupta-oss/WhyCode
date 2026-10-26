@@ -6,6 +6,7 @@ import io
 import os
 import re
 import tokenize
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,26 @@ from tree_sitter import Language, Node, Parser
 from whycode.ids import make_id, normalize_repo
 
 PYTHON_SUFFIXES = frozenset({".py"})
+DEFAULT_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "node_modules",
+        "build",
+        "dist",
+        "site-packages",
+        ".eggs",
+        ".tox",
+        ".nox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
 DEFAULT_MAX_FILE_BYTES = 2_000_000
 MAX_VALUE_CHARS = 500
 MAX_SYNTAX_ISSUES = 50
@@ -112,6 +133,20 @@ class ParsedFile(BaseModel):
     @property
     def entities(self) -> list[CodeEntity]:
         return [self.file, *self.classes, *self.functions, *self.config_keys]
+
+
+class SkippedFile(BaseModel):
+    """A candidate file left out on purpose (binary, too large, symlink, undecodable...)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    reason: str
+
+
+class RepositoryParse(BaseModel):
+    files: list[ParsedFile] = []
+    skipped: list[SkippedFile] = []
 
 
 @lru_cache(maxsize=1)
@@ -451,3 +486,59 @@ def parse_file(
     """
     real, rel = _resolve_in_repo(Path(repo_root), path)
     return parse_source(_read_source(real, rel, max_file_bytes), rel, repo)
+
+
+def _excluded_dir(dirpath: str, name: str, excluded: Collection[str]) -> bool:
+    full = os.path.join(dirpath, name)
+    return (
+        name in excluded
+        or name.endswith(".egg-info")
+        or os.path.isfile(os.path.join(full, "pyvenv.cfg"))  # any virtualenv, whatever its name
+    )
+
+
+def iter_repository(
+    repo_root: str | os.PathLike[str],
+    repo: str,
+    *,
+    exclude_dirs: Collection[str] = DEFAULT_EXCLUDED_DIRS,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> Iterator[ParsedFile | SkippedFile]:
+    """Parse every Python file under `repo_root`, one at a time, in sorted path order.
+
+    Excluded directories are not descended into.
+    """
+    repo = normalize_repo(repo)
+    root_real = Path(os.path.realpath(repo_root))
+    if not root_real.is_dir():
+        raise NotADirectoryError(f"repository root is not a directory: {repo_root!s}")
+    for dirpath, dirnames, filenames in os.walk(root_real, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if not _excluded_dir(dirpath, d, exclude_dirs))
+        for filename in sorted(filenames):
+            if PurePosixPath(filename).suffix not in PYTHON_SUFFIXES:
+                continue
+            full = os.path.join(dirpath, filename)
+            rel = Path(full).relative_to(root_real).as_posix()
+            try:
+                yield parse_file(root_real, rel, repo, max_file_bytes=max_file_bytes)
+            except EntityExtractionError as exc:
+                yield SkippedFile(path=rel, reason=str(exc))
+
+
+def parse_repository(
+    repo_root: str | os.PathLike[str],
+    repo: str,
+    *,
+    exclude_dirs: Collection[str] = DEFAULT_EXCLUDED_DIRS,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> RepositoryParse:
+    """Collect iter_repository() into one result. Use iter_repository() to stream large repos."""
+    result = RepositoryParse()
+    for item in iter_repository(
+        repo_root, repo, exclude_dirs=exclude_dirs, max_file_bytes=max_file_bytes
+    ):
+        if isinstance(item, ParsedFile):
+            result.files.append(item)
+        else:
+            result.skipped.append(item)
+    return result
