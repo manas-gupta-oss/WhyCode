@@ -12,6 +12,8 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "tree-sitter>=0.25",
+    "tree-sitter-python>=0.25",
 ]
 
 [dependency-groups]
