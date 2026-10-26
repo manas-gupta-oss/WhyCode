@@ -1,4 +1,46 @@
-"""Code entities (File, Class, Function, ConfigKey) from Python source, parsed with tree-sitter."""
+"""Code entities (File, Class, Function, ConfigKey) from Python source, parsed with tree-sitter.
+
+Deterministic and offline: repository code is read as bytes and parsed, never imported, executed
+or eval'd. No LLM, network or database is involved.
+
+Ids (always built by whycode/ids.py):
+    File       "<repo>#file:<path>"
+    Class      "<repo>#class:<path>::<qualified name>"   (schema.cypher has no :Class label yet)
+    Function   "<repo>#fn:<path>::<qualified name>"      "...sessions.py::Session.rebuild_auth"
+    ConfigKey  "<repo>#cfg:<path>::<qualified name>"     "...adapters.py::DEFAULT_RETRIES",
+                                                         "...adapters.py::HTTPAdapter.__init__.max_retries"
+    <path> is repo-relative with "/" separators. Qualified names join enclosing classes AND
+    functions with "." (no "<locals>"). ConfigKey ids carry the path, unlike the bare
+    "cfg:max_retries" example in schema.cypher, so `timeout=None` in two functions or the same
+    constant in two files stay separate nodes under MERGE.
+    A name defined twice in one scope (property getter/setter, try/except fallbacks) keeps the
+    plain id the first time; later ones get "~2", "~3", ... in the id only, never in
+    qualified_name. Ids are stable for identical source, but an inserted duplicate above an
+    existing one renumbers it.
+
+Lines are 1-based and inclusive, like git diff hunks, so lineage can intersect hunks with
+entity ranges. A decorated class or function starts at its first decorator; `def_line` is the
+line of the `def`/`class` keyword.
+
+ConfigKey is decided from syntax alone, which is a heuristic:
+  * module-level constants: a plain or annotated assignment with a value, at module scope (also
+    inside module-level if/try/with blocks), whose target name is UPPER_CASE with at least two
+    characters after leading underscores. `A = B = 1` and `A, B = 1, 2` yield each target.
+    TypeVar/ParamSpec/NewType-style declarations, imports, augmented assignments, annotations
+    without a value and class or function locals are not config. `LOGGER = getLogger()` IS
+    reported: syntax cannot tell a tunable constant from any other upper-case global.
+  * default arguments: every parameter with a default on a def (not on a lambda), named
+    "<function qualified name>.<param>".
+  Values are the source text of the right-hand side, cut to MAX_VALUE_CHARS.
+
+Syntax errors never raise: tree-sitter recovers, the file is marked `has_syntax_errors` with the
+ERROR/MISSING locations, and entities whose source span contains an error have
+`has_syntax_error=True`, since their names and ranges may be wrong.
+
+Encoding: the PEP 263 cookie or BOM is honoured (default UTF-8, strict); text that does not
+decode is an UnsupportedFileError, never parsed with replacement characters. The source is
+re-encoded to UTF-8 for tree-sitter, so byte offsets always refer to UTF-8 bytes.
+"""
 
 from __future__ import annotations
 
