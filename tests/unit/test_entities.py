@@ -158,6 +158,14 @@ def test_async_function(sample):
     assert (fn.start_line, fn.end_line) == (36, 37)
 
 
+def test_decorated_multiline_function_includes_decorators_in_range(sample):
+    fn = by_qual(sample.functions)["decorated"]
+    assert fn.decorators == ('decorator( "multi", )',)
+    assert fn.start_line == 40  # first decorator line
+    assert fn.def_line == 43
+    assert fn.end_line == 47
+
+
 def test_methods_not_confused_with_module_functions():
     src = "def run():\n    pass\n\nclass A:\n    def run(self):\n        pass\n"
     parsed = parse_source(src, "m.py", REPO)
@@ -165,6 +173,12 @@ def test_methods_not_confused_with_module_functions():
     assert set(fns) == {"run", "A.run"}
     assert fns["run"].id != fns["A.run"].id
     assert not fns["run"].is_method and fns["A.run"].is_method
+
+
+def test_decorated_class():
+    parsed = parse_source("@dataclass\nclass C:\n    x: int = 1\n", "m.py", REPO)
+    (cls,) = parsed.classes
+    assert (cls.start_line, cls.def_line, cls.end_line, cls.decorators) == (1, 2, 3, ("dataclass",))
 
 
 def test_crlf_and_trailing_blank_lines_do_not_shift_lines():

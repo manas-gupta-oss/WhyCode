@@ -14,6 +14,8 @@ from tree_sitter import Language, Node, Parser
 
 from whycode.ids import make_id, normalize_repo
 
+_WS_RE = re.compile(r"\s+")
+
 
 class EntityExtractionError(Exception):
     """A file could not be parsed for an expected reason (path, type, size or encoding)."""
@@ -172,6 +174,15 @@ class _Extractor:
         name = _text(node.child_by_field_name("name"))
         if not name:  # recovered from a syntax error without a name: nothing to identify
             return scope
+        span = node
+        decorators: tuple[str, ...] = ()
+        if node.parent is not None and node.parent.type == "decorated_definition":
+            span = node.parent
+            decorators = tuple(
+                _WS_RE.sub(" ", _text(d)).lstrip("@ ")
+                for d in span.children
+                if d.type == "decorator"
+            )
         qual = f"{scope.qual}.{name}" if scope.qual else name
         entity_id = make_id(self.repo, "class" if kind == "class" else "fn", f"{self.path}::{qual}")
         common = dict(
@@ -182,9 +193,10 @@ class _Extractor:
             qualified_name=qual,
             file_id=self.file_id,
             parent_id=scope.entity_id,
-            start_line=_start_line(node),
-            end_line=_end_line(node),
+            start_line=_start_line(span),
+            end_line=_end_line(span),
             def_line=_start_line(node),
+            decorators=decorators,
         )
         if kind == "class":
             self.classes.append(ClassEntity(**common))
